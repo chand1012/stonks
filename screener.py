@@ -5,7 +5,6 @@ import pandas as pd
 import yfinance as yf
 from rich.console import Console
 from rich.table import Table
-import json
 
 
 def calculate_sma(series, window):
