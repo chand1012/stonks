@@ -375,4 +375,4 @@ def bot_main():
 
 
 if __name__ == "__main__":
-    analyze("tickers.txt")
+    bot_main()

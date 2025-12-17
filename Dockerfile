@@ -14,8 +14,7 @@ RUN uv sync --frozen
 # Copy Python source files
 COPY main.py screener.py clean_tickers.py ./
 
-# Create default empty ticker file (can be overridden with volume mount)
-RUN touch tickers.txt
+COPY tickers.txt ./
 
 # Run the bot
 CMD ["uv", "run", "python", "main.py"]
