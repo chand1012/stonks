@@ -58,7 +58,9 @@ EASTERN = pytz.timezone("US/Eastern")
 POSITION_MAX_DAYS = 14
 
 
-def filter_results(results: list[TradeIdea], available_capital: float) -> list[TradeIdea]:
+def filter_results(
+    results: list[TradeIdea], available_capital: float
+) -> list[TradeIdea]:
     """
     Filters trade ideas by highest potential gain until capital is exhausted.
     Results should already be sorted by potential_gain_percent descending.
@@ -106,9 +108,9 @@ def get_market_schedule(date: datetime) -> tuple[datetime, datetime] | None:
             return None
 
         day = calendar[0]
-        # Combine date with time and make timezone-aware
-        open_dt = datetime.combine(day.date, day.open, tzinfo=EASTERN)
-        close_dt = datetime.combine(day.date, day.close, tzinfo=EASTERN)
+        # day.open and day.close are already timezone-aware datetime objects
+        open_dt = day.open.astimezone(EASTERN)
+        close_dt = day.close.astimezone(EASTERN)
 
         return (open_dt, close_dt)
     except Exception as e:
@@ -116,9 +118,7 @@ def get_market_schedule(date: datetime) -> tuple[datetime, datetime] | None:
         return None
 
 
-def calculate_run_times(
-    open_time: datetime, close_time: datetime
-) -> list[datetime]:
+def calculate_run_times(open_time: datetime, close_time: datetime) -> list[datetime]:
     """Returns 3 run times: market open, midday, 30min before close."""
     duration = close_time - open_time
     midday = open_time + duration / 2
@@ -148,8 +148,7 @@ def get_position_entry_date(symbol: str) -> datetime | None:
 
         # Find the earliest filled BUY order
         buy_orders = [
-            o for o in orders
-            if o.side == OrderSide.BUY and o.filled_at is not None
+            o for o in orders if o.side == OrderSide.BUY and o.filled_at is not None
         ]
 
         if not buy_orders:
@@ -188,7 +187,9 @@ def close_position_with_cancel(symbol: str):
         for order in orders:
             try:
                 trading_client.cancel_order_by_id(order.id)
-                console.print(f"[yellow]Cancelled order {order.id} for {symbol}[/yellow]")
+                console.print(
+                    f"[yellow]Cancelled order {order.id} for {symbol}[/yellow]"
+                )
             except Exception as e:
                 console.print(f"[red]Failed to cancel order {order.id}: {e}[/red]")
 
@@ -215,9 +216,7 @@ def place_bracket_order(trade: TradeIdea) -> bool:
                 take_profit=TakeProfitRequest(limit_price=round(trade.target_price, 2)),
             )
         )
-        console.print(
-            f"[green]Order placed for {trade.ticker}: {order.id}[/green]"
-        )
+        console.print(f"[green]Order placed for {trade.ticker}: {order.id}[/green]")
         console.print(
             f"  Entry: ${trade.entry_price:.2f}, "
             f"Stop: ${trade.stop_loss:.2f}, "
@@ -232,16 +231,20 @@ def place_bracket_order(trade: TradeIdea) -> bool:
 def run_trading_cycle():
     """Execute one trading cycle."""
     now = datetime.now(EASTERN)
-    console.print(f"\n[bold blue]{'='*50}[/bold blue]")
-    console.print(f"[bold blue]Starting trading cycle at {now.strftime('%Y-%m-%d %H:%M:%S %Z')}[/bold blue]")
-    console.print(f"[bold blue]{'='*50}[/bold blue]\n")
+    console.print(f"\n[bold blue]{'=' * 50}[/bold blue]")
+    console.print(
+        f"[bold blue]Starting trading cycle at {now.strftime('%Y-%m-%d %H:%M:%S %Z')}[/bold blue]"
+    )
+    console.print(f"[bold blue]{'=' * 50}[/bold blue]\n")
 
     # Step 1: Close positions held > 14 days
     console.print("[bold]Step 1: Checking for old positions...[/bold]")
     old_positions = get_positions_older_than(POSITION_MAX_DAYS)
     if old_positions:
         for pos in old_positions:
-            console.print(f"[yellow]Closing old position (>{POSITION_MAX_DAYS} days): {pos.symbol}[/yellow]")
+            console.print(
+                f"[yellow]Closing old position (>{POSITION_MAX_DAYS} days): {pos.symbol}[/yellow]"
+            )
             close_position_with_cancel(pos.symbol)
     else:
         console.print("[dim]No positions older than 14 days[/dim]")
@@ -276,7 +279,9 @@ def run_trading_cycle():
     # Step 5: Filter by available capital
     console.print("\n[bold]Step 5: Filtering by available capital...[/bold]")
     filtered = filter_results(results, available_capital)
-    console.print(f"[dim]Filtered to {len(filtered)} trades within capital constraints[/dim]")
+    console.print(
+        f"[dim]Filtered to {len(filtered)} trades within capital constraints[/dim]"
+    )
 
     # Step 6: Place orders for new trades (skip if already holding)
     console.print("\n[bold]Step 6: Placing orders...[/bold]")
@@ -288,24 +293,32 @@ def run_trading_cycle():
                 # Update current positions to avoid duplicate orders in same cycle
                 current_positions.add(trade.ticker)
         else:
-            console.print(f"[dim]Skipping {trade.ticker}: already holding position[/dim]")
+            console.print(
+                f"[dim]Skipping {trade.ticker}: already holding position[/dim]"
+            )
 
-    console.print(f"\n[bold green]Trading cycle complete. {orders_placed} new orders placed.[/bold green]")
+    console.print(
+        f"\n[bold green]Trading cycle complete. {orders_placed} new orders placed.[/bold green]"
+    )
 
 
 def sleep_until_tomorrow(now: datetime):
     """Sleep until 4am Eastern next day."""
-    tomorrow = (now + timedelta(days=1)).replace(hour=4, minute=0, second=0, microsecond=0)
+    tomorrow = (now + timedelta(days=1)).replace(
+        hour=4, minute=0, second=0, microsecond=0
+    )
     sleep_seconds = (tomorrow - now).total_seconds()
-    console.print(f"[dim]Sleeping until {tomorrow.strftime('%Y-%m-%d %H:%M:%S %Z')}[/dim]")
+    console.print(
+        f"[dim]Sleeping until {tomorrow.strftime('%Y-%m-%d %H:%M:%S %Z')}[/dim]"
+    )
     time.sleep(max(sleep_seconds, 60))  # At least 60 seconds
 
 
 def bot_main():
     """Main bot loop - runs continuously."""
-    console.print("\n[bold green]{'='*50}[/bold green]")
+    console.print(f"\n[bold green]{'='*50}[/bold green]")
     console.print("[bold green]Swing Trading Bot Started[/bold green]")
-    console.print(f"[bold green]{'='*50}[/bold green]\n")
+    console.print(f"[bold green]{'=' * 50}[/bold green]\n")
     console.print(f"[dim]Paper trading: {is_paper}[/dim]")
     console.print(f"[dim]Ticker file: {os.getenv('TICKER_FILE', 'tickers.txt')}[/dim]")
     console.print(f"[dim]Position max days: {POSITION_MAX_DAYS}[/dim]\n")
@@ -318,15 +331,21 @@ def bot_main():
 
         if schedule is None:
             # Market closed today (weekend/holiday)
-            console.print(f"[dim]{now.date()}: Market closed today, sleeping until tomorrow[/dim]")
+            console.print(
+                f"[dim]{now.date()}: Market closed today, sleeping until tomorrow[/dim]"
+            )
             sleep_until_tomorrow(now)
             continue
 
         open_time, close_time = schedule
         run_times = calculate_run_times(open_time, close_time)
 
-        console.print(f"[dim]Today's schedule - Open: {open_time.strftime('%H:%M')}, Close: {close_time.strftime('%H:%M')}[/dim]")
-        console.print(f"[dim]Run times: {', '.join(t.strftime('%H:%M') for t in run_times)}[/dim]")
+        console.print(
+            f"[dim]Today's schedule - Open: {open_time.strftime('%H:%M')}, Close: {close_time.strftime('%H:%M')}[/dim]"
+        )
+        console.print(
+            f"[dim]Run times: {', '.join(t.strftime('%H:%M') for t in run_times)}[/dim]"
+        )
 
         # Find next run time
         next_run = None
@@ -337,14 +356,16 @@ def bot_main():
 
         if next_run is None:
             # All runs done for today, sleep until tomorrow
-            console.print(f"[dim]All trading cycles complete for today[/dim]")
+            console.print("[dim]All trading cycles complete for today[/dim]")
             sleep_until_tomorrow(now)
             continue
 
         # Sleep until next run time
         sleep_seconds = (next_run - now).total_seconds()
         if sleep_seconds > 0:
-            console.print(f"[dim]Sleeping until next run at {next_run.strftime('%H:%M:%S %Z')} ({sleep_seconds/60:.1f} minutes)[/dim]")
+            console.print(
+                f"[dim]Sleeping until next run at {next_run.strftime('%H:%M:%S %Z')} ({sleep_seconds / 60:.1f} minutes)[/dim]"
+            )
             time.sleep(sleep_seconds)
 
         # Execute trading cycle
