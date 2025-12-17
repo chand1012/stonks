@@ -81,8 +81,10 @@ def analyze(ticker_file: str) -> list[TradeIdea]:
     with open(ticker_file, "r") as f:
         tickers = [line.strip() for line in f if line.strip()]
 
+    console.print(f"[bold green]Analyzing {len(tickers)} tickers[/bold green]")
+
     account = trading_client.get_account()
-    account_value = float(account.cash)
+    account_value = float(account.buying_power)
 
     results = []
     for ticker in tickers:
@@ -316,7 +318,7 @@ def sleep_until_tomorrow(now: datetime):
 
 def bot_main():
     """Main bot loop - runs continuously."""
-    console.print(f"\n[bold green]{'='*50}[/bold green]")
+    console.print(f"\n[bold green]{'=' * 50}[/bold green]")
     console.print("[bold green]Swing Trading Bot Started[/bold green]")
     console.print(f"[bold green]{'=' * 50}[/bold green]\n")
     console.print(f"[dim]Paper trading: {is_paper}[/dim]")
@@ -373,4 +375,4 @@ def bot_main():
 
 
 if __name__ == "__main__":
-    bot_main()
+    analyze("tickers.txt")

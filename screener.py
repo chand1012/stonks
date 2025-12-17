@@ -6,6 +6,8 @@ import yfinance as yf
 from rich.console import Console
 from rich.table import Table
 
+RISK_PERCENT = 0.005
+
 
 def calculate_sma(series, window):
     return series.rolling(window=window).mean()
@@ -16,7 +18,7 @@ def generate_execution_summary(ticker, price, stop_loss, target, account_value):
     Generates the Execution Summary table based on the 1% Risk Rule,
     and includes the Potential Gain percentage.
     """
-    risk_percent = 0.01
+    risk_percent = RISK_PERCENT
     max_risk_dollars = account_value * risk_percent
 
     risk_per_share = price - stop_loss
@@ -51,7 +53,9 @@ def generate_execution_summary(ticker, price, stop_loss, target, account_value):
     table.add_column("Notes", style="dim")
 
     table.add_row("Action", "BUY (Limit)", f"Current Price: ${price:.2f}")
-    table.add_row("Quantity", f"{shares} Shares", "Based on 1% Account Risk")
+    table.add_row(
+        "Quantity", f"{shares} Shares", f"Based on {RISK_PERCENT * 100}% Account Risk"
+    )
     table.add_row("Entry Price", f"${price:.2f}", "Limit Order")
     table.add_row("Stop Loss", f"${stop_loss:.2f}", "Hard Stop (Below 50SMA)")
     table.add_row("Target Price", f"${target:.2f}", f"{risk_reward_ratio:.2f}R Reward")
@@ -123,7 +127,7 @@ def analyze_stock(ticker, account_value, console):
                 console.print("\n")
 
                 # Calculate all values for the dictionary
-                risk_percent = 0.01
+                risk_percent = RISK_PERCENT
                 max_risk_dollars = account_value * risk_percent
                 risk_per_share = current_close - stop_loss
                 shares = int(max_risk_dollars // risk_per_share)
