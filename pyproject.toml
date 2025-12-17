@@ -8,10 +8,17 @@ dependencies = [
     "alpaca-py>=0.43.2",
     "arrow>=1.4.0",
     "fire>=0.7.1",
+    "httpx>=0.28.1",
     "pandas>=2.3.3",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
     "pytz>=2024.1",
     "rich>=14.2.0",
     "yfinance>=0.2.66",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.9",
+    "ty>=0.0.2",
 ]

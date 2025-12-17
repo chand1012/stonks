@@ -84,7 +84,7 @@ def analyze(ticker_file: str) -> list[TradeIdea]:
     console.print(f"[bold green]Analyzing {len(tickers)} tickers[/bold green]")
 
     account = trading_client.get_account()
-    account_value = float(account.buying_power)
+    account_value = float(account.buying_power)  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
 
     results = []
     for ticker in tickers:
@@ -131,7 +131,7 @@ def calculate_run_times(open_time: datetime, close_time: datetime) -> list[datet
 def get_available_capital() -> float:
     """Get buying power from account."""
     account = trading_client.get_account()
-    return float(account.buying_power)
+    return float(account.buying_power)  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
 
 
 def get_position_entry_date(symbol: str) -> datetime | None:
@@ -150,7 +150,7 @@ def get_position_entry_date(symbol: str) -> datetime | None:
 
         # Find the earliest filled BUY order
         buy_orders = [
-            o for o in orders if o.side == OrderSide.BUY and o.filled_at is not None
+            o for o in orders if o.side == OrderSide.BUY and o.filled_at is not None  # ty:ignore[possibly-missing-attribute]
         ]
 
         if not buy_orders:
@@ -168,11 +168,11 @@ def get_position_entry_date(symbol: str) -> datetime | None:
 def get_positions_older_than(days: int) -> list:
     """Get positions held longer than specified days."""
     positions = trading_client.get_all_positions()
-    cutoff = datetime.now(pytz.UTC) - timedelta(days=days)
+    cutoff = datetime.now(pytz.UTC) - timedelta(days=days)  # ty:ignore[invalid-argument-type]
     old_positions = []
 
     for pos in positions:
-        entry_date = get_position_entry_date(pos.symbol)
+        entry_date = get_position_entry_date(pos.symbol)  # ty:ignore[possibly-missing-attribute]
         if entry_date and entry_date < cutoff:
             old_positions.append(pos)
 
@@ -188,12 +188,12 @@ def close_position_with_cancel(symbol: str):
         )
         for order in orders:
             try:
-                trading_client.cancel_order_by_id(order.id)
+                trading_client.cancel_order_by_id(order.id)  # ty:ignore[possibly-missing-attribute]
                 console.print(
-                    f"[yellow]Cancelled order {order.id} for {symbol}[/yellow]"
+                    f"[yellow]Cancelled order {order.id} for {symbol}[/yellow]"  # ty:ignore[possibly-missing-attribute]
                 )
             except Exception as e:
-                console.print(f"[red]Failed to cancel order {order.id}: {e}[/red]")
+                console.print(f"[red]Failed to cancel order {order.id}: {e}[/red]")  # ty:ignore[possibly-missing-attribute]
 
         # Close the position
         trading_client.close_position(symbol)
@@ -218,7 +218,7 @@ def place_bracket_order(trade: TradeIdea) -> bool:
                 take_profit=TakeProfitRequest(limit_price=round(trade.target_price, 2)),
             )
         )
-        console.print(f"[green]Order placed for {trade.ticker}: {order.id}[/green]")
+        console.print(f"[green]Order placed for {trade.ticker}: {order.id}[/green]")  # ty:ignore[possibly-missing-attribute]
         console.print(
             f"  Entry: ${trade.entry_price:.2f}, "
             f"Stop: ${trade.stop_loss:.2f}, "
@@ -253,7 +253,7 @@ def run_trading_cycle():
 
     # Step 2: Get current positions to avoid duplicates
     console.print("\n[bold]Step 2: Getting current positions...[/bold]")
-    current_positions = {p.symbol for p in trading_client.get_all_positions()}
+    current_positions = {p.symbol for p in trading_client.get_all_positions()}  # ty:ignore[possibly-missing-attribute]
     if current_positions:
         console.print(f"[dim]Current positions: {', '.join(current_positions)}[/dim]")
     else:
