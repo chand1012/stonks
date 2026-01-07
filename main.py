@@ -1,5 +1,6 @@
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -17,7 +18,7 @@ from alpaca.trading.requests import (
 from alpaca.trading.enums import OrderSide, OrderClass, TimeInForce, QueryOrderStatus
 from pydantic import BaseModel, Field, ConfigDict
 
-from screener import analyze_stock
+from screener import analyze_stock, get_current_price_and_ema
 
 load_dotenv()
 
@@ -46,6 +47,25 @@ class TradeIdea(BaseModel):
 
     def to_dict(self):
         return self.model_dump()
+
+
+@dataclass
+class ExitConfig:
+    """Configuration for position exit modes."""
+
+    ema_exit: bool = False
+    ema_period: int = 10
+    max_days: int = 14
+
+    @property
+    def calendar_exit_enabled(self) -> bool:
+        """Calendar exit is enabled if max_days > 0."""
+        return self.max_days > 0
+
+    @property
+    def any_exit_enabled(self) -> bool:
+        """At least one exit mode must be enabled."""
+        return self.ema_exit or self.calendar_exit_enabled
 
 
 console = Console()
@@ -179,6 +199,36 @@ def get_positions_older_than(days: int) -> list:
     return old_positions
 
 
+def get_positions_below_ema(ema_period: int) -> list[tuple[str, float, float]]:
+    """
+    Get positions where current price is below the specified EMA.
+
+    Args:
+        ema_period: EMA period to check against
+
+    Returns:
+        List of tuples: (symbol, current_price, ema_value)
+    """
+    positions = trading_client.get_all_positions()
+    failing_positions = []
+
+    for pos in positions:
+        symbol = pos.symbol  # ty:ignore[possibly-missing-attribute]
+        result = get_current_price_and_ema(symbol, ema_period)
+
+        if result is None:
+            # Skip if we can't fetch data (don't close on data errors)
+            console.print(f"[yellow]Warning: Could not fetch EMA data for {symbol}[/yellow]")
+            continue
+
+        current_price, ema_value = result
+
+        if current_price < ema_value:
+            failing_positions.append((symbol, current_price, ema_value))
+
+    return failing_positions
+
+
 def close_position_with_cancel(symbol: str):
     """Cancel all orders for symbol and close position."""
     try:
@@ -230,8 +280,8 @@ def place_bracket_order(trade: TradeIdea) -> bool:
         return False
 
 
-def run_trading_cycle():
-    """Execute one trading cycle."""
+def run_trading_cycle(exit_config: ExitConfig):
+    """Execute one trading cycle with configurable exit modes."""
     now = datetime.now(EASTERN)
     console.print(f"\n[bold blue]{'=' * 50}[/bold blue]")
     console.print(
@@ -239,17 +289,52 @@ def run_trading_cycle():
     )
     console.print(f"[bold blue]{'=' * 50}[/bold blue]\n")
 
-    # Step 1: Close positions held > 14 days
-    console.print("[bold]Step 1: Checking for old positions...[/bold]")
-    old_positions = get_positions_older_than(POSITION_MAX_DAYS)
-    if old_positions:
+    # Step 1: Check exit conditions
+    positions_to_close: set[str] = set()
+
+    # Step 1a: Calendar-based exit (positions held > max_days)
+    if exit_config.calendar_exit_enabled:
+        console.print(
+            f"[bold]Step 1a: Checking for old positions (>{exit_config.max_days} days)...[/bold]"
+        )
+        old_positions = get_positions_older_than(exit_config.max_days)
         for pos in old_positions:
+            symbol = pos.symbol  # ty:ignore[possibly-missing-attribute]
             console.print(
-                f"[yellow]Closing old position (>{POSITION_MAX_DAYS} days): {pos.symbol}[/yellow]"
+                f"[yellow]Calendar exit triggered for {symbol} (>{exit_config.max_days} days)[/yellow]"
             )
-            close_position_with_cancel(pos.symbol)
+            positions_to_close.add(symbol)
+        if not old_positions:
+            console.print(f"[dim]No positions older than {exit_config.max_days} days[/dim]")
     else:
-        console.print("[dim]No positions older than 14 days[/dim]")
+        console.print("[dim]Step 1a: Calendar-based exit disabled[/dim]")
+
+    # Step 1b: EMA-based exit (price below EMA)
+    if exit_config.ema_exit:
+        console.print(
+            f"[bold]Step 1b: Checking EMA trend ({exit_config.ema_period}-day)...[/bold]"
+        )
+        ema_failures = get_positions_below_ema(exit_config.ema_period)
+        for symbol, price, ema in ema_failures:
+            console.print(
+                f"[yellow]EMA exit triggered for {symbol}: "
+                f"${price:.2f} < EMA({exit_config.ema_period})=${ema:.2f}[/yellow]"
+            )
+            positions_to_close.add(symbol)
+        if not ema_failures:
+            console.print(
+                f"[dim]No positions below {exit_config.ema_period}-day EMA[/dim]"
+            )
+    else:
+        console.print("[dim]Step 1b: EMA-based exit disabled[/dim]")
+
+    # Step 1c: Close all positions meeting exit criteria
+    if positions_to_close:
+        console.print(f"\n[bold]Closing {len(positions_to_close)} position(s)...[/bold]")
+        for symbol in positions_to_close:
+            close_position_with_cancel(symbol)
+    else:
+        console.print("[dim]No positions to close[/dim]")
 
     # Step 2: Get current positions to avoid duplicates
     console.print("\n[bold]Step 2: Getting current positions...[/bold]")
@@ -316,14 +401,21 @@ def sleep_until_tomorrow(now: datetime):
     time.sleep(max(sleep_seconds, 60))  # At least 60 seconds
 
 
-def bot_main():
+def bot_main(exit_config: ExitConfig):
     """Main bot loop - runs continuously."""
     console.print(f"\n[bold green]{'=' * 50}[/bold green]")
     console.print("[bold green]Swing Trading Bot Started[/bold green]")
     console.print(f"[bold green]{'=' * 50}[/bold green]\n")
     console.print(f"[dim]Paper trading: {is_paper}[/dim]")
     console.print(f"[dim]Ticker file: {os.getenv('TICKER_FILE', 'tickers.txt')}[/dim]")
-    console.print(f"[dim]Position max days: {POSITION_MAX_DAYS}[/dim]\n")
+
+    # Display exit configuration
+    console.print("[dim]Exit modes:[/dim]")
+    if exit_config.calendar_exit_enabled:
+        console.print(f"[dim]  - Calendar: {exit_config.max_days} days max hold[/dim]")
+    if exit_config.ema_exit:
+        console.print(f"[dim]  - EMA trend: {exit_config.ema_period}-day EMA[/dim]")
+    console.print()
 
     while True:
         now = datetime.now(EASTERN)
@@ -371,8 +463,51 @@ def bot_main():
             time.sleep(sleep_seconds)
 
         # Execute trading cycle
-        run_trading_cycle()
+        run_trading_cycle(exit_config)
+
+
+def main(
+    ema_exit: bool | None = None,
+    ema_period: int | None = None,
+    max_days: int | None = None,
+):
+    """
+    Swing Trading Bot with configurable exit modes.
+
+    Args:
+        ema_exit: Enable EMA-based exit (close when price < EMA)
+        ema_period: EMA period for trend-based stop (default: 10)
+        max_days: Calendar-based exit after N days (default: 14, 0 to disable)
+
+    Environment variables (CLI overrides these):
+        EMA_EXIT: Set to "true" to enable EMA-based exit
+        EMA_PERIOD: EMA period for trend-based stop
+        MAX_DAYS: Calendar-based exit after N days
+    """
+    # Read from environment variables, CLI args override
+    if ema_exit is None:
+        ema_exit = os.getenv("EMA_EXIT", "").lower() == "true"
+    if ema_period is None:
+        ema_period = int(os.getenv("EMA_PERIOD", "10"))
+    if max_days is None:
+        max_days = int(os.getenv("MAX_DAYS", "14"))
+
+    exit_config = ExitConfig(
+        ema_exit=ema_exit,
+        ema_period=ema_period,
+        max_days=max_days,
+    )
+
+    # Validate at least one exit mode is enabled
+    if not exit_config.any_exit_enabled:
+        console.print("[red]Error: At least one exit mode must be enabled[/red]")
+        console.print("[dim]Use --ema-exit and/or --max-days > 0[/dim]")
+        return
+
+    bot_main(exit_config)
 
 
 if __name__ == "__main__":
-    bot_main()
+    import fire
+
+    fire.Fire(main)

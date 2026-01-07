@@ -13,6 +13,46 @@ def calculate_sma(series, window):
     return series.rolling(window=window).mean()
 
 
+def calculate_ema(series, window):
+    """Calculate Exponential Moving Average."""
+    return series.ewm(span=window, adjust=False).mean()
+
+
+def get_current_price_and_ema(ticker: str, ema_period: int) -> tuple[float, float] | None:
+    """
+    Fetch current price and EMA value for a ticker.
+
+    Args:
+        ticker: Stock symbol
+        ema_period: EMA period to calculate
+
+    Returns:
+        Tuple of (current_price, ema_value) or None if data unavailable
+    """
+    try:
+        # Download enough data for EMA calculation (2x period for stability)
+        df = yf.download(
+            ticker, period=f"{max(ema_period * 2, 30)}d", progress=False, auto_adjust=True
+        )
+
+        if df.empty or len(df) < ema_period:
+            return None
+
+        # Handle yfinance multi-index columns if present
+        if isinstance(df.columns, pd.MultiIndex):
+            df = df.xs(ticker, axis=1, level=1)
+
+        df["EMA"] = calculate_ema(df["Close"], ema_period)
+
+        current_price = float(df["Close"].iloc[-1])
+        current_ema = float(df["EMA"].iloc[-1])
+
+        return (current_price, current_ema)
+
+    except Exception:
+        return None
+
+
 def generate_execution_summary(ticker, price, stop_loss, target, account_value):
     """
     Generates the Execution Summary table based on the 1% Risk Rule,
