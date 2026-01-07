@@ -15,6 +15,7 @@ RUN uv sync --frozen
 COPY main.py screener.py clean_tickers.py ./
 
 COPY tickers.txt ./
+COPY ark_tickers.txt ./
 
 # Run the bot
 CMD ["uv", "run", "python", "main.py"]
