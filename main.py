@@ -16,7 +16,7 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
     GetCalendarRequest,
 )
-from alpaca.trading.enums import OrderSide, OrderClass, TimeInForce, QueryOrderStatus
+from alpaca.trading.enums import OrderSide, OrderClass, TimeInForce, QueryOrderStatus, OrderType
 from pydantic import BaseModel, Field, ConfigDict
 
 from screener import analyze_stock, get_current_price_and_ema
@@ -69,7 +69,7 @@ class ExitConfig:
     @property
     def any_exit_enabled(self) -> bool:
         """At least one exit mode must be enabled."""
-        return self.ema_exit or self.calendar_exit_enabled
+        return self.ema_exit or self.calendar_exit_enabled or self.trailing_stop_enabled
 
 
 console = Console()
@@ -238,6 +238,10 @@ def get_positions_for_trailing_stop(
 ) -> list[tuple[str, float, float, float]]:
     """
     Get positions that have gained enough to activate trailing stop.
+    
+    Note: This function assumes long-only positions (buy-to-open). The bot
+    only trades long positions, so gain calculations are based on:
+    (current_price - entry_price) / entry_price
 
     Args:
         activation_percent: Minimum gain percentage to activate trailing stop
@@ -438,7 +442,7 @@ def run_trading_cycle(exit_config: ExitConfig):
                 GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
             )
             has_trailing_stop = any(
-                hasattr(order, 'trail_percent') and order.trail_percent is not None
+                order.type == OrderType.TRAILING_STOP  # ty:ignore[possibly-missing-attribute]
                 for order in orders
             )
             
@@ -655,7 +659,7 @@ def main(
     # Validate at least one exit mode is enabled
     if not exit_config.any_exit_enabled:
         console.print("[red]Error: At least one exit mode must be enabled[/red]")
-        console.print("[dim]Use --ema-exit and/or --max-days > 0[/dim]")
+        console.print("[dim]Use --ema_exit, --max_days > 0, and/or --trailing_stop[/dim]")
         return
 
     bot_main(exit_config)

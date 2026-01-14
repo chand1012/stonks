@@ -16,28 +16,28 @@ uv sync
 uv run python main.py
 
 # Enable EMA-based exit (10-day EMA by default)
-uv run python main.py --ema-exit
+uv run python main.py --ema_exit
 
 # Custom EMA period (21-day)
-uv run python main.py --ema-exit --ema-period=21
+uv run python main.py --ema_exit --ema_period=21
 
 # Custom calendar-based exit period
-uv run python main.py --max-days=7
+uv run python main.py --max_days=7
 
 # Both exit modes together (exit on EITHER condition)
-uv run python main.py --ema-exit --ema-period=10 --max-days=14
+uv run python main.py --ema_exit --ema_period=10 --max_days=14
 
 # EMA-only mode (disable calendar exit)
-uv run python main.py --ema-exit --max-days=0
+uv run python main.py --ema_exit --max_days=0
 
 # Enable trailing stop (activate at +5% gain, trail by 2%)
-uv run python main.py --trailing-stop
+uv run python main.py --trailing_stop
 
 # Custom trailing stop settings
-uv run python main.py --trailing-stop --trailing-stop-activation=10 --trailing-stop-trail=3
+uv run python main.py --trailing_stop --trailing_stop_activation=10 --trailing_stop_trail=3
 
 # Combine all exit modes
-uv run python main.py --ema-exit --max-days=14 --trailing-stop
+uv run python main.py --ema_exit --max_days=14 --trailing_stop
 
 # Lint and format
 uv run ruff check .
