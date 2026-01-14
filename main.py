@@ -284,6 +284,11 @@ def activate_trailing_stop(symbol: str, trail_percent: float) -> bool:
         position = trading_client.get_open_position(symbol)
         qty = int(float(position.qty))  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
         
+        # Safety check: ensure we have a valid long position
+        if qty <= 0:
+            console.print(f"[red]Invalid position quantity for {symbol}: {qty}[/red]")
+            return False
+        
         # Cancel all existing orders for this symbol (stop loss, take profit, etc.)
         orders = trading_client.get_orders(
             GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
@@ -298,6 +303,7 @@ def activate_trailing_stop(symbol: str, trail_percent: float) -> bool:
                 console.print(f"[yellow]Failed to cancel order {order.id}: {e}[/yellow]")  # ty:ignore[possibly-missing-attribute]
         
         # Place trailing stop order
+        # Note: trail_percent expects percentage as decimal (e.g., 2.0 for 2%, not 0.02)
         trailing_stop_order = trading_client.submit_order(
             TrailingStopOrderRequest(
                 symbol=symbol,
