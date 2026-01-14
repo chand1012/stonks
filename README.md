@@ -186,11 +186,12 @@ Activates a trailing stop after a position reaches a specified gain threshold. T
 
 **Example:** With 5% activation threshold and 2% trail:
 
-- Entry at $100, initial stop at $98, target at $105
-- Stock rises to $105 → Trailing stop activates at $102.90 (2% below $105)
+- Entry at $100 (with initial bracket: stop at $98, target at $105)
+- Initial setup: 2.5x risk/reward ratio (risk $2, target $5 gain)
+- Stock rises to $105 → Trailing stop ACTIVATES at $102.90 (2% below $105)
 - Stock continues to $110 → Stop adjusts to $107.80 (2% below $110)
 - Stock pulls back to $107.75 → Position closes, locking in ~7.75% gain
-- Without trailing stop, you would have hit take-profit at $105 (+5%)
+- **Benefit**: Without trailing stop, position would have closed at take-profit target of $105 (+5%)
 
 This mode is ideal for momentum trades where you want to capture extended moves beyond your initial target while protecting gains.
 
