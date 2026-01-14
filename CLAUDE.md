@@ -30,6 +30,15 @@ uv run python main.py --ema-exit --ema-period=10 --max-days=14
 # EMA-only mode (disable calendar exit)
 uv run python main.py --ema-exit --max-days=0
 
+# Enable trailing stop (activate at +5% gain, trail by 2%)
+uv run python main.py --trailing-stop
+
+# Custom trailing stop settings
+uv run python main.py --trailing-stop --trailing-stop-activation=10 --trailing-stop-trail=3
+
+# Combine all exit modes
+uv run python main.py --ema-exit --max-days=14 --trailing-stop
+
 # Lint and format
 uv run ruff check .
 uv run ruff format .
@@ -56,8 +65,10 @@ main.py (Orchestration)          screener.py (Strategy Engine)
 ├── filter_results() - capital   └── Position sizing & risk calc
 │   allocation by gain %
 ├── place_bracket_order()
-├── get_positions_older_than()   (calendar-based exit)
-└── get_positions_below_ema()    (trend-based exit)
+├── get_positions_older_than()       (calendar-based exit)
+├── get_positions_below_ema()        (trend-based exit)
+├── get_positions_for_trailing_stop() (trailing stop eligibility)
+└── activate_trailing_stop()         (replace bracket with trailing stop)
 ```
 
 **Trading Flow:**
@@ -65,6 +76,7 @@ main.py (Orchestration)          screener.py (Strategy Engine)
 2. Checks exit conditions (configurable):
    - Calendar exit: Closes positions held > N days (default: 14)
    - EMA exit: Closes positions where price < X-day EMA (default: 10)
+   - Trailing stop: Activates trailing stop when position gains > X% (default: 5%), trails by Y% (default: 2%)
 3. Reads tickers from file, runs `analyze_stock()` on each
 4. Filters by available capital, sorted by potential gain %
 5. Places bracket orders (limit + OCO stop/target)
@@ -95,6 +107,9 @@ Exit mode configuration (CLI flags override these):
 - `EMA_EXIT` - Set `true` to enable EMA-based exit
 - `EMA_PERIOD` - EMA period for trend-based stop (default: `10`)
 - `MAX_DAYS` - Calendar-based exit after N days (default: `14`, `0` to disable)
+- `TRAILING_STOP` - Set `true` to enable trailing stop mode
+- `TRAILING_STOP_ACTIVATION` - Gain % threshold to activate trailing stop (default: `5.0`)
+- `TRAILING_STOP_TRAIL` - Trailing stop percentage (default: `2.0`)
 
 ## Code Style
 

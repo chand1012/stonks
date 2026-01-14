@@ -28,7 +28,8 @@ Risk Management:
 
 Exit Rules (configurable):
 ├── Calendar-based: Close after N days (default: 14)
-└── Trend-based: Close when price drops below X-day EMA
+├── Trend-based: Close when price drops below X-day EMA
+└── Trailing stop: Activate when position gains X%, then trail by Y%
 ```
 
 ## Quick Start
@@ -64,6 +65,11 @@ TICKER_FILE=tickers.txt
 EMA_EXIT=false     # Enable EMA-based exits
 EMA_PERIOD=10      # EMA period for trend stops
 MAX_DAYS=14        # Close positions after N days (0 to disable)
+
+# Trailing stop configuration (optional)
+TRAILING_STOP=false              # Enable trailing stop mode
+TRAILING_STOP_ACTIVATION=5.0     # Activate trailing stop at +X% gain
+TRAILING_STOP_TRAIL=2.0          # Trail by X% below peak price
 ```
 
 ### Create Your Watchlist
@@ -93,11 +99,17 @@ uv run python main.py
 # Enable trend-based stops (exit when price < 10-day EMA)
 uv run python main.py --ema_exit
 
-# Use both exit modes
-uv run python main.py --ema_exit --max_days=14
+# Enable trailing stop (activate at +5% gain, trail by 2%)
+uv run python main.py --trailing_stop
 
-# Custom settings
-uv run python main.py --ema_exit --ema_period=21 --max_days=7
+# Custom trailing stop settings
+uv run python main.py --trailing_stop --trailing_stop_activation=10 --trailing_stop_trail=3
+
+# Combine multiple exit modes
+uv run python main.py --ema_exit --max_days=14 --trailing_stop
+
+# Full custom configuration
+uv run python main.py --ema_exit --ema_period=21 --max_days=7 --trailing_stop --trailing_stop_activation=8 --trailing_stop_trail=2.5
 ```
 
 The bot will:
@@ -139,6 +151,9 @@ stonks/
 | `--ema_exit` | `EMA_EXIT` | `false` | Enable EMA-based exit |
 | `--ema_period` | `EMA_PERIOD` | `10` | EMA period for trend stops |
 | `--max_days` | `MAX_DAYS` | `14` | Calendar exit after N days (0 to disable) |
+| `--trailing_stop` | `TRAILING_STOP` | `false` | Enable trailing stop mode |
+| `--trailing_stop_activation` | `TRAILING_STOP_ACTIVATION` | `5.0` | Gain % to activate trailing stop |
+| `--trailing_stop_trail` | `TRAILING_STOP_TRAIL` | `2.0` | Trailing stop percentage |
 
 ## How the Exit Modes Work
 
@@ -154,6 +169,30 @@ Holds positions as long as price stays above the N-day EMA. This lets winners ru
 
 - Stock goes parabolic for 20 days? You stay in the whole ride.
 - Stock stalls and drops below EMA on day 6? You exit early and preserve capital.
+
+### Trailing Stop Loss
+
+Activates a trailing stop after a position reaches a specified gain threshold. This locks in profits while giving winners room to run.
+
+**How it works:**
+
+1. **Entry**: Position opens with a standard bracket order (fixed stop-loss at -2% below 50 SMA, take-profit at 2.5x risk)
+2. **Monitoring**: Bot checks positions during each trading cycle (3x per day)
+3. **Activation**: When a position gains ≥ activation threshold (default: 5%), the bot:
+   - Cancels the existing bracket orders
+   - Replaces them with a trailing stop order
+4. **Trailing**: The stop price automatically adjusts upward as the stock price rises, staying X% (default: 2%) below the peak price
+5. **Exit**: Position closes automatically if price drops X% from its highest point
+
+**Example:** With 5% activation threshold and 2% trail:
+
+- Entry at $100, initial stop at $98, target at $105
+- Stock rises to $105 → Trailing stop activates at $102.90 (2% below $105)
+- Stock continues to $110 → Stop adjusts to $107.80 (2% below $110)
+- Stock pulls back to $107.75 → Position closes, locking in ~7.75% gain
+- Without trailing stop, you would have hit take-profit at $105 (+5%)
+
+This mode is ideal for momentum trades where you want to capture extended moves beyond your initial target while protecting gains.
 
 ## Development
 
