@@ -54,12 +54,12 @@ class TradeIdea(BaseModel):
 class ExitConfig:
     """Configuration for position exit modes."""
 
-    ema_exit: bool = False
-    ema_period: int = 10
-    max_days: int = 14
-    trailing_stop_enabled: bool = False
-    trailing_stop_activation_percent: float = 5.0
-    trailing_stop_trail_percent: float = 2.0
+    ema_exit: bool = False  # Enable EMA-based exit (price < EMA)
+    ema_period: int = 10  # EMA period for trend-based stop
+    max_days: int = 14  # Calendar-based exit after N days (0 to disable)
+    trailing_stop_enabled: bool = False  # Enable trailing stop mode
+    trailing_stop_activation_percent: float = 5.0  # Gain % to activate trailing stop (e.g., 5.0 = 5%)
+    trailing_stop_trail_percent: float = 2.0  # Trail % below peak price (e.g., 2.0 = 2%)
 
     @property
     def calendar_exit_enabled(self) -> bool:
@@ -280,7 +280,7 @@ def activate_trailing_stop(symbol: str, trail_percent: float) -> bool:
         True if trailing stop was activated successfully
     """
     try:
-        # Get position quantity
+        # Get position quantity (convert from Alpaca's type to int)
         position = trading_client.get_open_position(symbol)
         qty = int(float(position.qty))  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
         
@@ -316,7 +316,7 @@ def activate_trailing_stop(symbol: str, trail_percent: float) -> bool:
         
         console.print(
             f"[green]Trailing stop activated for {symbol}: "
-            f"{qty} shares, {trail_percent}% trail[/green]"
+            f"Order {trailing_stop_order.id}, {qty} shares, {trail_percent}% trail[/green]"  # ty:ignore[possibly-missing-attribute]
         )
         return True
         
