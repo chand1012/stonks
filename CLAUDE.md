@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Python 3.14 swing trading bot using Alpaca API for automated stock analysis and order execution. Uses a pullback-into-moving-average strategy with bracket orders (stop-loss + take-profit).
+Python 3.14 swing trading bot using Alpaca API for automated stock analysis and order execution. Supports both long and short positions using a pullback-into-moving-average strategy with bracket orders (stop-loss + take-profit).
 
 ## Commands
 
@@ -60,36 +60,46 @@ docker build -t stonks .
 
 ```
 main.py (Orchestration)          screener.py (Strategy Engine)
-├── bot_main() - infinite loop   ├── analyze_stock() - core analysis
+├── bot_main() - infinite loop   ├── analyze_stock() - long & short analysis
 ├── run_trading_cycle()          ├── SMA/EMA calculations
 ├── filter_results() - capital   └── Position sizing & risk calc
 │   allocation by gain %
-├── place_bracket_order()
+├── place_bracket_order()            (handles both long & short)
 ├── get_positions_older_than()       (calendar-based exit)
-├── get_positions_below_ema()        (trend-based exit)
-├── get_positions_for_trailing_stop() (trailing stop eligibility)
+├── get_positions_for_ema_exit()     (trend-based exit, side-aware)
+├── get_positions_for_trailing_stop() (trailing stop eligibility, side-aware)
 └── activate_trailing_stop()         (replace bracket with trailing stop)
 ```
 
 **Trading Flow:**
 1. Bot runs 3 cycles daily (market open, midday, 30min before close)
-2. Checks market regime (SPY vs 200 SMA) - reduces position size by 50% in bearish markets
-3. Checks exit conditions (configurable):
+2. Checks market regime (SPY vs 200 SMA) - adjusts position sizing per direction
+3. Checks exit conditions (configurable, works for both longs and shorts):
    - Calendar exit: Closes positions held > N days (default: 21)
-   - EMA exit: Closes positions where price < X-day EMA (default: 10)
+   - EMA exit: Closes longs when price < EMA, shorts when price > EMA (default: 10-day)
    - Trailing stop: Activates trailing stop when position gains > X% (default: 3%), trails by Y% (default: 2%)
-4. Reads tickers from file, runs `analyze_stock()` on each
+4. Reads tickers from file, runs `analyze_stock()` on each (scans for both long and short setups)
 5. Filters by available capital, sorted by potential gain %
-6. Places bracket orders (limit + OCO stop/target)
+6. Places bracket orders (limit + OCO stop/target) - works for both long and short
 
-**Strategy (screener.py:analyze_stock):**
+**Long Strategy (screener.py:analyze_stock):**
 - Trend filter: Price > 200 SMA (uptrend)
-- Entry filter: Price 0-5% above 50 SMA (pullback zone)
-- Volume filter: Current volume > 20-day average * 1.2 (confirms buying interest)
-- Market regime: SPY > 200 SMA for full position size; 50% reduction in bearish markets
+- Entry filter: Price 0-5% above 50 SMA (pullback to support)
+- Volume filter: Current volume > 20-day average * 1.2
 - Stop loss: 2% below 50 SMA
 - Target: 1.5x risk
-- Risk per trade: 0.5% of account (0.25% in bearish markets)
+
+**Short Strategy (screener.py:analyze_stock):**
+- Trend filter: Price < 200 SMA (downtrend)
+- Entry filter: Price 0-5% below 50 SMA (rally to resistance)
+- Volume filter: Current volume > 20-day average * 1.2
+- Stop loss: 2% above 50 SMA
+- Target: 1.5x risk (below entry)
+
+**Position Sizing by Market Regime:**
+- Bull market (SPY > 200 SMA): Longs full size, shorts 50%
+- Bear market (SPY < 200 SMA): Shorts full size, longs 50%
+- Risk per trade: 0.5% of account (0.25% when trading against regime)
 
 ## Key Files
 

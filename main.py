@@ -16,7 +16,13 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
     GetCalendarRequest,
 )
-from alpaca.trading.enums import OrderSide, OrderClass, TimeInForce, QueryOrderStatus, OrderType
+from alpaca.trading.enums import (
+    OrderSide,
+    OrderClass,
+    TimeInForce,
+    QueryOrderStatus,
+    OrderType,
+)
 from pydantic import BaseModel, Field, ConfigDict
 
 from screener import analyze_stock, get_current_price_and_ema, get_market_regime
@@ -28,7 +34,8 @@ class TradeIdea(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     ticker: str
-    action: Literal["BUY (Limit)"] = "BUY (Limit)"
+    side: Literal["buy", "sell"] = "buy"  # "buy" for long, "sell" for short
+    action: Literal["BUY (Limit)", "SELL SHORT (Limit)"] = "BUY (Limit)"
     quantity: float = Field(..., gt=0)
 
     entry_price: float
@@ -58,8 +65,12 @@ class ExitConfig:
     ema_period: int = 10  # EMA period for trend-based stop
     max_days: int = 21  # Calendar-based exit after N days (0 to disable)
     trailing_stop_enabled: bool = False  # Enable trailing stop mode
-    trailing_stop_activation_percent: float = 3.0  # Gain % to activate trailing stop (e.g., 3.0 = 3%)
-    trailing_stop_trail_percent: float = 2.0  # Trail % below peak price (e.g., 2.0 = 2%)
+    trailing_stop_activation_percent: float = (
+        3.0  # Gain % to activate trailing stop (e.g., 3.0 = 3%)
+    )
+    trailing_stop_trail_percent: float = (
+        2.0  # Trail % below peak price (e.g., 2.0 = 2%)
+    )
 
     @property
     def calendar_exit_enabled(self) -> bool:
@@ -101,7 +112,7 @@ def filter_results(
 
 
 def analyze(ticker_file: str) -> list[TradeIdea]:
-    """Analyze tickers from file and return sorted trade ideas."""
+    """Analyze tickers from file and return sorted trade ideas (both long and short)."""
     with open(ticker_file, "r") as f:
         tickers = [line.strip() for line in f if line.strip()]
 
@@ -111,16 +122,26 @@ def analyze(ticker_file: str) -> list[TradeIdea]:
     account_value = float(account.buying_power)  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
 
     # Check market regime and adjust position sizing
+    # Longs get full size in bull markets, shorts get full size in bear markets
     is_bullish = get_market_regime()
-    risk_multiplier = 1.0 if is_bullish else 0.5
     if is_bullish:
-        console.print("[dim]Market regime: Bullish (SPY > 200 SMA) - Full position size[/dim]")
+        long_risk_multiplier = 1.0
+        short_risk_multiplier = 0.5
+        console.print(
+            "[dim]Market regime: Bullish (SPY > 200 SMA) - Full size longs, 50% shorts[/dim]"
+        )
     else:
-        console.print("[yellow]Market regime: Bearish (SPY < 200 SMA) - 50% position size[/yellow]")
+        long_risk_multiplier = 0.5
+        short_risk_multiplier = 1.0
+        console.print(
+            "[yellow]Market regime: Bearish (SPY < 200 SMA) - 50% longs, full size shorts[/yellow]"
+        )
 
     results = []
     for ticker in tickers:
-        result = analyze_stock(ticker, account_value, console, risk_multiplier)
+        result = analyze_stock(
+            ticker, account_value, console, long_risk_multiplier, short_risk_multiplier
+        )
         if result:
             results.append(TradeIdea(**result))
 
@@ -170,6 +191,7 @@ def get_position_entry_date(symbol: str) -> datetime | None:
     """
     Get the entry date for a position by looking at filled orders.
     Returns the earliest fill date for this symbol.
+    Works for both long (BUY) and short (SELL) positions.
     """
     try:
         orders = trading_client.get_orders(
@@ -180,17 +202,21 @@ def get_position_entry_date(symbol: str) -> datetime | None:
             )
         )
 
-        # Find the earliest filled BUY order
-        buy_orders = [
-            o for o in orders if o.side == OrderSide.BUY and o.filled_at is not None  # ty:ignore[possibly-missing-attribute]
+        # Find the earliest filled order that opened a position
+        # For longs: BUY opens, for shorts: SELL opens
+        # We look for both since we don't know position direction here
+        opening_orders = [
+            o
+            for o in orders
+            if o.filled_at is not None  # ty:ignore[possibly-missing-attribute]
         ]
 
-        if not buy_orders:
+        if not opening_orders:
             return None
 
         # Sort by filled_at and get the earliest
-        buy_orders.sort(key=lambda o: o.filled_at)
-        return buy_orders[0].filled_at
+        opening_orders.sort(key=lambda o: o.filled_at)
+        return opening_orders[0].filled_at
 
     except Exception as e:
         console.print(f"[red]Error getting entry date for {symbol}: {e}[/red]")
@@ -211,67 +237,90 @@ def get_positions_older_than(days: int) -> list:
     return old_positions
 
 
-def get_positions_below_ema(ema_period: int) -> list[tuple[str, float, float]]:
+def get_positions_for_ema_exit(ema_period: int) -> list[tuple[str, float, float, str]]:
     """
-    Get positions where current price is below the specified EMA.
+    Get positions where EMA exit is triggered.
+    - Long positions: exit when price < EMA (trend turning bearish)
+    - Short positions: exit when price > EMA (trend turning bullish)
 
     Args:
         ema_period: EMA period to check against
 
     Returns:
-        List of tuples: (symbol, current_price, ema_value)
+        List of tuples: (symbol, current_price, ema_value, side)
     """
     positions = trading_client.get_all_positions()
     failing_positions = []
 
     for pos in positions:
         symbol = pos.symbol  # ty:ignore[possibly-missing-attribute]
+        qty = float(pos.qty)  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
+
+        # Determine position side: positive qty = long, negative qty = short
+        is_long = qty > 0
+
         result = get_current_price_and_ema(symbol, ema_period)
 
         if result is None:
             # Skip if we can't fetch data (don't close on data errors)
-            console.print(f"[yellow]Warning: Could not fetch EMA data for {symbol}[/yellow]")
+            console.print(
+                f"[yellow]Warning: Could not fetch EMA data for {symbol}[/yellow]"
+            )
             continue
 
         current_price, ema_value = result
 
-        if current_price < ema_value:
-            failing_positions.append((symbol, current_price, ema_value))
+        # Long: exit when price drops below EMA
+        # Short: exit when price rises above EMA
+        if is_long and current_price < ema_value:
+            failing_positions.append((symbol, current_price, ema_value, "long"))
+        elif not is_long and current_price > ema_value:
+            failing_positions.append((symbol, current_price, ema_value, "short"))
 
     return failing_positions
 
 
 def get_positions_for_trailing_stop(
     activation_percent: float,
-) -> list[tuple[str, float, float, float]]:
+) -> list[tuple[str, float, float, float, str]]:
     """
     Get positions that have gained enough to activate trailing stop.
-    
-    Note: This function assumes long-only positions (buy-to-open). The bot
-    only trades long positions, so gain calculations are based on:
-    (current_price - entry_price) / entry_price
+    Works for both long and short positions.
+
+    Long gain: (current_price - entry_price) / entry_price
+    Short gain: (entry_price - current_price) / entry_price
 
     Args:
         activation_percent: Minimum gain percentage to activate trailing stop
 
     Returns:
-        List of tuples: (symbol, entry_price, current_price, gain_percent)
+        List of tuples: (symbol, entry_price, current_price, gain_percent, side)
     """
     positions = trading_client.get_all_positions()
     eligible_positions = []
 
     for pos in positions:
         symbol = pos.symbol  # ty:ignore[possibly-missing-attribute]
-        
+        qty = float(pos.qty)  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
+
+        # Determine position side: positive qty = long, negative qty = short
+        is_long = qty > 0
+        side = "long" if is_long else "short"
+
         # Get entry price (average price paid)
         entry_price = float(pos.avg_entry_price)  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
         current_price = float(pos.current_price)  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
-        
-        # Calculate unrealized gain percentage
-        gain_percent = ((current_price - entry_price) / entry_price) * 100
-        
+
+        # Calculate unrealized gain percentage based on position direction
+        if is_long:
+            gain_percent = ((current_price - entry_price) / entry_price) * 100
+        else:
+            gain_percent = ((entry_price - current_price) / entry_price) * 100
+
         if gain_percent >= activation_percent:
-            eligible_positions.append((symbol, entry_price, current_price, gain_percent))
+            eligible_positions.append(
+                (symbol, entry_price, current_price, gain_percent, side)
+            )
 
     return eligible_positions
 
@@ -279,6 +328,7 @@ def get_positions_for_trailing_stop(
 def activate_trailing_stop(symbol: str, trail_percent: float) -> bool:
     """
     Replace existing bracket orders with trailing stop for a position.
+    Works for both long and short positions.
 
     Args:
         symbol: Stock symbol
@@ -290,13 +340,23 @@ def activate_trailing_stop(symbol: str, trail_percent: float) -> bool:
     try:
         # Get position quantity (convert from Alpaca's type to int)
         position = trading_client.get_open_position(symbol)
-        qty = int(float(position.qty))  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
-        
-        # Safety check: ensure we have a valid long position
-        if qty <= 0:
+        qty = float(position.qty)  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
+
+        # Determine position side and order side for closing
+        # Long (qty > 0): SELL to close
+        # Short (qty < 0): BUY to close
+        if qty > 0:
+            close_side = OrderSide.SELL
+            position_type = "LONG"
+            abs_qty = int(qty)
+        elif qty < 0:
+            close_side = OrderSide.BUY
+            position_type = "SHORT"
+            abs_qty = int(abs(qty))
+        else:
             console.print(f"[red]Invalid position quantity for {symbol}: {qty}[/red]")
             return False
-        
+
         # Cancel all existing orders for this symbol (stop loss, take profit, etc.)
         orders = trading_client.get_orders(
             GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
@@ -308,26 +368,28 @@ def activate_trailing_stop(symbol: str, trail_percent: float) -> bool:
                     f"[yellow]Cancelled order {order.id} for {symbol}[/yellow]"  # ty:ignore[possibly-missing-attribute]
                 )
             except Exception as e:
-                console.print(f"[yellow]Failed to cancel order {order.id}: {e}[/yellow]")  # ty:ignore[possibly-missing-attribute]
-        
+                console.print(
+                    f"[yellow]Failed to cancel order {order.id}: {e}[/yellow]"
+                )  # ty:ignore[possibly-missing-attribute]
+
         # Place trailing stop order
         # Note: trail_percent expects percentage as decimal (e.g., 2.0 for 2%, not 0.02)
         trailing_stop_order = trading_client.submit_order(
             TrailingStopOrderRequest(
                 symbol=symbol,
-                qty=qty,
-                side=OrderSide.SELL,
+                qty=abs_qty,
+                side=close_side,
                 trail_percent=trail_percent,
                 time_in_force=TimeInForce.GTC,
             )
         )
-        
+
         console.print(
-            f"[green]Trailing stop activated for {symbol}: "
-            f"Order {trailing_stop_order.id}, {qty} shares, {trail_percent}% trail[/green]"  # ty:ignore[possibly-missing-attribute]
+            f"[green]Trailing stop activated for {position_type} {symbol}: "
+            f"Order {trailing_stop_order.id}, {abs_qty} shares, {trail_percent}% trail[/green]"  # ty:ignore[possibly-missing-attribute]
         )
         return True
-        
+
     except Exception as e:
         console.print(f"[red]Failed to activate trailing stop for {symbol}: {e}[/red]")
         return False
@@ -358,13 +420,21 @@ def close_position_with_cancel(symbol: str):
 
 
 def place_bracket_order(trade: TradeIdea) -> bool:
-    """Place a bracket order with stop loss and take profit."""
+    """Place a bracket order with stop loss and take profit (works for both long and short)."""
     try:
+        # Determine order side based on trade direction
+        if trade.side == "buy":
+            order_side = OrderSide.BUY
+            direction_label = "LONG"
+        else:
+            order_side = OrderSide.SELL
+            direction_label = "SHORT"
+
         order = trading_client.submit_order(
             LimitOrderRequest(
                 symbol=trade.ticker,
                 qty=int(trade.quantity),
-                side=OrderSide.BUY,
+                side=order_side,
                 limit_price=round(trade.entry_price, 2),
                 time_in_force=TimeInForce.GTC,
                 order_class=OrderClass.BRACKET,
@@ -372,7 +442,9 @@ def place_bracket_order(trade: TradeIdea) -> bool:
                 take_profit=TakeProfitRequest(limit_price=round(trade.target_price, 2)),
             )
         )
-        console.print(f"[green]Order placed for {trade.ticker}: {order.id}[/green]")  # ty:ignore[possibly-missing-attribute]
+        console.print(
+            f"[green]{direction_label} order placed for {trade.ticker}: {order.id}[/green]"
+        )  # ty:ignore[possibly-missing-attribute]
         console.print(
             f"  Entry: ${trade.entry_price:.2f}, "
             f"Stop: ${trade.stop_loss:.2f}, "
@@ -409,26 +481,32 @@ def run_trading_cycle(exit_config: ExitConfig):
             )
             positions_to_close.add(symbol)
         if not old_positions:
-            console.print(f"[dim]No positions older than {exit_config.max_days} days[/dim]")
+            console.print(
+                f"[dim]No positions older than {exit_config.max_days} days[/dim]"
+            )
     else:
         console.print("[dim]Step 1a: Calendar-based exit disabled[/dim]")
 
-    # Step 1b: EMA-based exit (price below EMA)
+    # Step 1b: EMA-based exit (long: price < EMA, short: price > EMA)
     if exit_config.ema_exit:
         console.print(
             f"[bold]Step 1b: Checking EMA trend ({exit_config.ema_period}-day)...[/bold]"
         )
-        ema_failures = get_positions_below_ema(exit_config.ema_period)
-        for symbol, price, ema in ema_failures:
-            console.print(
-                f"[yellow]EMA exit triggered for {symbol}: "
-                f"${price:.2f} < EMA({exit_config.ema_period})=${ema:.2f}[/yellow]"
-            )
+        ema_failures = get_positions_for_ema_exit(exit_config.ema_period)
+        for symbol, price, ema, side in ema_failures:
+            if side == "long":
+                console.print(
+                    f"[yellow]EMA exit triggered for LONG {symbol}: "
+                    f"${price:.2f} < EMA({exit_config.ema_period})=${ema:.2f}[/yellow]"
+                )
+            else:
+                console.print(
+                    f"[yellow]EMA exit triggered for SHORT {symbol}: "
+                    f"${price:.2f} > EMA({exit_config.ema_period})=${ema:.2f}[/yellow]"
+                )
             positions_to_close.add(symbol)
         if not ema_failures:
-            console.print(
-                f"[dim]No positions below {exit_config.ema_period}-day EMA[/dim]"
-            )
+            console.print("[dim]No positions triggered EMA exit[/dim]")
     else:
         console.print("[dim]Step 1b: EMA-based exit disabled[/dim]")
 
@@ -441,15 +519,22 @@ def run_trading_cycle(exit_config: ExitConfig):
         eligible_positions = get_positions_for_trailing_stop(
             exit_config.trailing_stop_activation_percent
         )
-        
+
         activated_count = 0
-        for symbol, entry_price, current_price, gain_percent in eligible_positions:
+        for (
+            symbol,
+            entry_price,
+            current_price,
+            gain_percent,
+            side,
+        ) in eligible_positions:
+            position_type = "LONG" if side == "long" else "SHORT"
             console.print(
-                f"[cyan]Position {symbol} eligible for trailing stop: "
+                f"[cyan]{position_type} {symbol} eligible for trailing stop: "
                 f"${entry_price:.2f} -> ${current_price:.2f} "
                 f"(+{gain_percent:.2f}%)[/cyan]"
             )
-            
+
             # Check if this position already has a trailing stop
             # (We'll only activate once per position)
             orders = trading_client.get_orders(
@@ -459,13 +544,15 @@ def run_trading_cycle(exit_config: ExitConfig):
                 order.type == OrderType.TRAILING_STOP  # ty:ignore[possibly-missing-attribute]
                 for order in orders
             )
-            
+
             if not has_trailing_stop:
-                if activate_trailing_stop(symbol, exit_config.trailing_stop_trail_percent):
+                if activate_trailing_stop(
+                    symbol, exit_config.trailing_stop_trail_percent
+                ):
                     activated_count += 1
             else:
                 console.print(f"[dim]  {symbol} already has trailing stop[/dim]")
-        
+
         if not eligible_positions:
             console.print(
                 f"[dim]No positions with >{exit_config.trailing_stop_activation_percent}% gain[/dim]"
@@ -479,7 +566,9 @@ def run_trading_cycle(exit_config: ExitConfig):
 
     # Step 1d: Close all positions meeting exit criteria
     if positions_to_close:
-        console.print(f"\n[bold]Closing {len(positions_to_close)} position(s)...[/bold]")
+        console.print(
+            f"\n[bold]Closing {len(positions_to_close)} position(s)...[/bold]"
+        )
         for symbol in positions_to_close:
             close_position_with_cancel(symbol)
     else:
@@ -673,7 +762,9 @@ def main(
     # Validate at least one exit mode is enabled
     if not exit_config.any_exit_enabled:
         console.print("[red]Error: At least one exit mode must be enabled[/red]")
-        console.print("[dim]Use --ema_exit, --max_days > 0, and/or --trailing_stop[/dim]")
+        console.print(
+            "[dim]Use --ema_exit, --max_days > 0, and/or --trailing_stop[/dim]"
+        )
         return
 
     bot_main(exit_config)
