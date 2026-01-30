@@ -12,7 +12,7 @@ Python 3.14 swing trading bot using Alpaca API for automated stock analysis and 
 # Install dependencies
 uv sync
 
-# Run the trading bot (default: 14-day calendar exit)
+# Run the trading bot (default: 21-day calendar exit)
 uv run python main.py
 
 # Enable EMA-based exit (10-day EMA by default)
@@ -30,7 +30,7 @@ uv run python main.py --ema_exit --ema_period=10 --max_days=14
 # EMA-only mode (disable calendar exit)
 uv run python main.py --ema_exit --max_days=0
 
-# Enable trailing stop (activate at +5% gain, trail by 2%)
+# Enable trailing stop (activate at +3% gain, trail by 2%)
 uv run python main.py --trailing_stop
 
 # Custom trailing stop settings
@@ -73,20 +73,23 @@ main.py (Orchestration)          screener.py (Strategy Engine)
 
 **Trading Flow:**
 1. Bot runs 3 cycles daily (market open, midday, 30min before close)
-2. Checks exit conditions (configurable):
-   - Calendar exit: Closes positions held > N days (default: 14)
+2. Checks market regime (SPY vs 200 SMA) - reduces position size by 50% in bearish markets
+3. Checks exit conditions (configurable):
+   - Calendar exit: Closes positions held > N days (default: 21)
    - EMA exit: Closes positions where price < X-day EMA (default: 10)
-   - Trailing stop: Activates trailing stop when position gains > X% (default: 5%), trails by Y% (default: 2%)
-3. Reads tickers from file, runs `analyze_stock()` on each
-4. Filters by available capital, sorted by potential gain %
-5. Places bracket orders (limit + OCO stop/target)
+   - Trailing stop: Activates trailing stop when position gains > X% (default: 3%), trails by Y% (default: 2%)
+4. Reads tickers from file, runs `analyze_stock()` on each
+5. Filters by available capital, sorted by potential gain %
+6. Places bracket orders (limit + OCO stop/target)
 
 **Strategy (screener.py:analyze_stock):**
 - Trend filter: Price > 200 SMA (uptrend)
-- Entry filter: Price 0-3% above 50 SMA (pullback zone)
+- Entry filter: Price 0-5% above 50 SMA (pullback zone)
+- Volume filter: Current volume > 20-day average * 1.2 (confirms buying interest)
+- Market regime: SPY > 200 SMA for full position size; 50% reduction in bearish markets
 - Stop loss: 2% below 50 SMA
-- Target: 2.5x risk (minimum 2:1 R/R)
-- Risk per trade: 0.5% of account
+- Target: 1.5x risk
+- Risk per trade: 0.5% of account (0.25% in bearish markets)
 
 ## Key Files
 
@@ -106,9 +109,9 @@ Required in `.env`:
 Exit mode configuration (CLI flags override these):
 - `EMA_EXIT` - Set `true` to enable EMA-based exit
 - `EMA_PERIOD` - EMA period for trend-based stop (default: `10`)
-- `MAX_DAYS` - Calendar-based exit after N days (default: `14`, `0` to disable)
+- `MAX_DAYS` - Calendar-based exit after N days (default: `21`, `0` to disable)
 - `TRAILING_STOP` - Set `true` to enable trailing stop mode
-- `TRAILING_STOP_ACTIVATION` - Gain % threshold to activate trailing stop (default: `5.0`)
+- `TRAILING_STOP_ACTIVATION` - Gain % threshold to activate trailing stop (default: `3.0`)
 - `TRAILING_STOP_TRAIL` - Trailing stop percentage (default: `2.0`)
 
 ## Code Style

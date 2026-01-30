@@ -19,7 +19,7 @@ from alpaca.trading.requests import (
 from alpaca.trading.enums import OrderSide, OrderClass, TimeInForce, QueryOrderStatus, OrderType
 from pydantic import BaseModel, Field, ConfigDict
 
-from screener import analyze_stock, get_current_price_and_ema
+from screener import analyze_stock, get_current_price_and_ema, get_market_regime
 
 load_dotenv()
 
@@ -56,9 +56,9 @@ class ExitConfig:
 
     ema_exit: bool = False  # Enable EMA-based exit (price < EMA)
     ema_period: int = 10  # EMA period for trend-based stop
-    max_days: int = 14  # Calendar-based exit after N days (0 to disable)
+    max_days: int = 21  # Calendar-based exit after N days (0 to disable)
     trailing_stop_enabled: bool = False  # Enable trailing stop mode
-    trailing_stop_activation_percent: float = 5.0  # Gain % to activate trailing stop (e.g., 5.0 = 5%)
+    trailing_stop_activation_percent: float = 3.0  # Gain % to activate trailing stop (e.g., 3.0 = 3%)
     trailing_stop_trail_percent: float = 2.0  # Trail % below peak price (e.g., 2.0 = 2%)
 
     @property
@@ -110,9 +110,17 @@ def analyze(ticker_file: str) -> list[TradeIdea]:
     account = trading_client.get_account()
     account_value = float(account.buying_power)  # ty:ignore[possibly-missing-attribute, invalid-argument-type]
 
+    # Check market regime and adjust position sizing
+    is_bullish = get_market_regime()
+    risk_multiplier = 1.0 if is_bullish else 0.5
+    if is_bullish:
+        console.print("[dim]Market regime: Bullish (SPY > 200 SMA) - Full position size[/dim]")
+    else:
+        console.print("[yellow]Market regime: Bearish (SPY < 200 SMA) - 50% position size[/yellow]")
+
     results = []
     for ticker in tickers:
-        result = analyze_stock(ticker, account_value, console)
+        result = analyze_stock(ticker, account_value, console, risk_multiplier)
         if result:
             results.append(TradeIdea(**result))
 
@@ -626,9 +634,9 @@ def main(
     Args:
         ema_exit: Enable EMA-based exit (close when price < EMA)
         ema_period: EMA period for trend-based stop (default: 10)
-        max_days: Calendar-based exit after N days (default: 14, 0 to disable)
+        max_days: Calendar-based exit after N days (default: 21, 0 to disable)
         trailing_stop: Enable trailing stop mode
-        trailing_stop_activation: Gain % to activate trailing stop (default: 5.0)
+        trailing_stop_activation: Gain % to activate trailing stop (default: 3.0)
         trailing_stop_trail: Trailing stop % (default: 2.0)
 
     Environment variables (CLI overrides these):
@@ -645,11 +653,11 @@ def main(
     if ema_period is None:
         ema_period = int(os.getenv("EMA_PERIOD", "10"))
     if max_days is None:
-        max_days = int(os.getenv("MAX_DAYS", "14"))
+        max_days = int(os.getenv("MAX_DAYS", "21"))
     if trailing_stop is None:
         trailing_stop = os.getenv("TRAILING_STOP", "").lower() == "true"
     if trailing_stop_activation is None:
-        trailing_stop_activation = float(os.getenv("TRAILING_STOP_ACTIVATION", "5.0"))
+        trailing_stop_activation = float(os.getenv("TRAILING_STOP_ACTIVATION", "3.0"))
     if trailing_stop_trail is None:
         trailing_stop_trail = float(os.getenv("TRAILING_STOP_TRAIL", "2.0"))
 

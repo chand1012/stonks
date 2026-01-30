@@ -53,12 +53,42 @@ def get_current_price_and_ema(ticker: str, ema_period: int) -> tuple[float, floa
         return None
 
 
-def generate_execution_summary(ticker, price, stop_loss, target, account_value):
+def get_market_regime() -> bool:
+    """
+    Check if SPY is above 200 SMA (bullish regime).
+
+    Returns:
+        True if market is bullish (SPY > 200 SMA), False otherwise
+    """
+    try:
+        spy = yf.download("SPY", period="1y", progress=False, auto_adjust=True)
+
+        if spy.empty or len(spy) < 200:
+            # If we can't get data, assume bullish to avoid blocking trades
+            return True
+
+        # Handle yfinance multi-index columns if present
+        if isinstance(spy.columns, pd.MultiIndex):
+            spy = spy.xs("SPY", axis=1, level=1)
+
+        current_price = float(spy["Close"].iloc[-1])
+        sma_200 = float(spy["Close"].rolling(200).mean().iloc[-1])
+
+        return current_price > sma_200
+    except Exception:
+        # On error, assume bullish to avoid blocking trades
+        return True
+
+
+def generate_execution_summary(ticker, price, stop_loss, target, account_value, risk_multiplier=1.0):
     """
     Generates the Execution Summary table based on the 1% Risk Rule,
     and includes the Potential Gain percentage.
+
+    Args:
+        risk_multiplier: Multiplier for position size (0.5 in bearish market, 1.0 in bullish)
     """
-    risk_percent = RISK_PERCENT
+    risk_percent = RISK_PERCENT * risk_multiplier
     max_risk_dollars = account_value * risk_percent
 
     risk_per_share = price - stop_loss
@@ -118,7 +148,7 @@ def generate_execution_summary(ticker, price, stop_loss, target, account_value):
     return table
 
 
-def analyze_stock(ticker, account_value, console):
+def analyze_stock(ticker, account_value, console, risk_multiplier=1.0):
     try:
         # Download 1 year of data to ensure we have enough for 200 SMA
         df = yf.download(ticker, period="1y", progress=False, auto_adjust=True)
@@ -143,23 +173,28 @@ def analyze_stock(ticker, account_value, console):
         # 1. Trend Filter: Price must be above 200 SMA
         is_uptrend = current_close > sma_200
 
-        # 2. Pullback Filter: Price is above 50 SMA but within 3% of it (The "Sweet Spot")
+        # 2. Pullback Filter: Price is above 50 SMA but within 5% of it (The "Sweet Spot")
         # We want to buy near the line, not when it's extended 20% above it.
         distance_from_50 = (current_close - sma_50) / sma_50
-        is_pullback = 0 < distance_from_50 < 0.03
+        is_pullback = 0 < distance_from_50 < 0.05
 
-        if is_uptrend and is_pullback:
+        # 3. Volume Filter: Current volume must be above 20-day average (confirms buying interest)
+        avg_volume_20 = df["Volume"].rolling(20).mean().iloc[-1]
+        current_volume = df["Volume"].iloc[-1]
+        has_volume = current_volume > avg_volume_20 * 1.2
+
+        if is_uptrend and is_pullback and has_volume:
             # --- AUTO-CALCULATE EXECUTION PLAN ---
 
             # Stop Loss: Set 2% below the 50 SMA (Technical Support)
             stop_loss = sma_50 * 0.98
 
-            # Target: 2.5x the Risk (Minimum 2:1 is best practice)
+            # Target: 1.5x the Risk (more achievable within holding period)
             risk = current_close - stop_loss
-            target = current_close + (risk * 2.5)
+            target = current_close + (risk * 1.5)
 
             table = generate_execution_summary(
-                ticker, current_close, stop_loss, target, account_value
+                ticker, current_close, stop_loss, target, account_value, risk_multiplier
             )
 
             if table:
@@ -167,7 +202,7 @@ def analyze_stock(ticker, account_value, console):
                 console.print("\n")
 
                 # Calculate all values for the dictionary
-                risk_percent = RISK_PERCENT
+                risk_percent = RISK_PERCENT * risk_multiplier
                 max_risk_dollars = account_value * risk_percent
                 risk_per_share = current_close - stop_loss
                 shares = int(max_risk_dollars // risk_per_share)
