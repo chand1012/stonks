@@ -2,6 +2,7 @@ import yfinance as yf
 import sys
 import os
 
+
 def is_stock_active(ticker):
     try:
         stock = yf.Ticker(ticker)
@@ -11,8 +12,9 @@ def is_stock_active(ticker):
     except Exception:
         return False
 
+
 def clean_ticker_file(file_path):
-    with open(file_path, 'r') as f:
+    with open(file_path, "r") as f:
         tickers = [line.strip() for line in f if line.strip()]
 
     active_tickers = []
@@ -23,8 +25,9 @@ def clean_ticker_file(file_path):
             print(f"Removing inactive ticker: {ticker}")
 
     # Write back only active tickers
-    with open(file_path, 'w') as f:
-        f.write('\n'.join(active_tickers) + '\n')
+    with open(file_path, "w") as f:
+        f.write("\n".join(active_tickers) + "\n")
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
@@ -38,4 +41,3 @@ if __name__ == "__main__":
 
     clean_ticker_file(file_path)
     print("Ticker file updated successfully")
-
