@@ -1,11 +1,8 @@
-import os
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
 import pytz
-from dotenv import load_dotenv
 from rich.console import Console
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
@@ -25,9 +22,8 @@ from alpaca.trading.enums import (
 )
 from pydantic import BaseModel, Field, ConfigDict
 
+from config import config
 from screener import analyze_stock, get_current_price_and_ema, get_market_regime
-
-load_dotenv()
 
 
 class TradeIdea(BaseModel):
@@ -57,40 +53,12 @@ class TradeIdea(BaseModel):
         return self.model_dump()
 
 
-@dataclass
-class ExitConfig:
-    """Configuration for position exit modes."""
-
-    ema_exit: bool = False  # Enable EMA-based exit (price < EMA)
-    ema_period: int = 10  # EMA period for trend-based stop
-    max_days: int = 21  # Calendar-based exit after N days (0 to disable)
-    trailing_stop_enabled: bool = False  # Enable trailing stop mode
-    trailing_stop_activation_percent: float = (
-        3.0  # Gain % to activate trailing stop (e.g., 3.0 = 3%)
-    )
-    trailing_stop_trail_percent: float = (
-        2.0  # Trail % below peak price (e.g., 2.0 = 2%)
-    )
-
-    @property
-    def calendar_exit_enabled(self) -> bool:
-        """Calendar exit is enabled if max_days > 0."""
-        return self.max_days > 0
-
-    @property
-    def any_exit_enabled(self) -> bool:
-        """At least one exit mode must be enabled."""
-        return self.ema_exit or self.calendar_exit_enabled or self.trailing_stop_enabled
-
-
 console = Console()
-is_paper = os.getenv("ALPACA_PAPER") == "true"
 trading_client = TradingClient(
-    os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY"), paper=is_paper
+    config.alpaca.api_key, config.alpaca.secret_key, paper=config.alpaca.paper_trading
 )
 
-EASTERN = pytz.timezone("US/Eastern")
-POSITION_MAX_DAYS = 14
+EASTERN = pytz.timezone(config.timezone)
 
 
 def filter_results(
@@ -125,14 +93,14 @@ def analyze(ticker_file: str) -> list[TradeIdea]:
     # Longs get full size in bull markets, shorts get full size in bear markets
     is_bullish = get_market_regime()
     if is_bullish:
-        long_risk_multiplier = 1.0
-        short_risk_multiplier = 0.5
+        long_risk_multiplier = config.analysis.bull_long_multiplier
+        short_risk_multiplier = config.analysis.bull_short_multiplier
         console.print(
             "[dim]Market regime: Bullish (SPY > 200 SMA) - Full size longs, 50% shorts[/dim]"
         )
     else:
-        long_risk_multiplier = 0.5
-        short_risk_multiplier = 1.0
+        long_risk_multiplier = config.analysis.bear_long_multiplier
+        short_risk_multiplier = config.analysis.bear_short_multiplier
         console.print(
             "[yellow]Market regime: Bearish (SPY < 200 SMA) - 50% longs, full size shorts[/yellow]"
         )
@@ -281,17 +249,19 @@ def get_positions_for_ema_exit(ema_period: int) -> list[tuple[str, float, float,
 
 
 def get_positions_for_trailing_stop(
-    activation_percent: float,
+    long_activation_percent: float,
+    short_activation_percent: float,
 ) -> list[tuple[str, float, float, float, str]]:
     """
     Get positions that have gained enough to activate trailing stop.
-    Works for both long and short positions.
+    Uses different thresholds for longs vs shorts (shorts need faster exits).
 
     Long gain: (current_price - entry_price) / entry_price
     Short gain: (entry_price - current_price) / entry_price
 
     Args:
-        activation_percent: Minimum gain percentage to activate trailing stop
+        long_activation_percent: Minimum gain % for longs to activate trailing stop
+        short_activation_percent: Minimum gain % for shorts (typically lower)
 
     Returns:
         List of tuples: (symbol, entry_price, current_price, gain_percent, side)
@@ -314,10 +284,12 @@ def get_positions_for_trailing_stop(
         # Calculate unrealized gain percentage based on position direction
         if is_long:
             gain_percent = ((current_price - entry_price) / entry_price) * 100
+            activation_threshold = long_activation_percent
         else:
             gain_percent = ((entry_price - current_price) / entry_price) * 100
+            activation_threshold = short_activation_percent
 
-        if gain_percent >= activation_percent:
+        if gain_percent >= activation_threshold:
             eligible_positions.append(
                 (symbol, entry_price, current_price, gain_percent, side)
             )
@@ -456,8 +428,10 @@ def place_bracket_order(trade: TradeIdea) -> bool:
         return False
 
 
-def run_trading_cycle(exit_config: ExitConfig):
+def run_trading_cycle():
     """Execute one trading cycle with configurable exit modes."""
+    exit_cfg = config.exit
+
     now = datetime.now(EASTERN)
     console.print(f"\n[bold blue]{'=' * 50}[/bold blue]")
     console.print(
@@ -469,40 +443,40 @@ def run_trading_cycle(exit_config: ExitConfig):
     positions_to_close: set[str] = set()
 
     # Step 1a: Calendar-based exit (positions held > max_days)
-    if exit_config.calendar_exit_enabled:
+    if exit_cfg.calendar_exit_enabled:
         console.print(
-            f"[bold]Step 1a: Checking for old positions (>{exit_config.max_days} days)...[/bold]"
+            f"[bold]Step 1a: Checking for old positions (>{exit_cfg.max_hold_days} days)...[/bold]"
         )
-        old_positions = get_positions_older_than(exit_config.max_days)
+        old_positions = get_positions_older_than(exit_cfg.max_hold_days)
         for pos in old_positions:
             symbol = pos.symbol  # ty:ignore[possibly-missing-attribute]
             console.print(
-                f"[yellow]Calendar exit triggered for {symbol} (>{exit_config.max_days} days)[/yellow]"
+                f"[yellow]Calendar exit triggered for {symbol} (>{exit_cfg.max_hold_days} days)[/yellow]"
             )
             positions_to_close.add(symbol)
         if not old_positions:
             console.print(
-                f"[dim]No positions older than {exit_config.max_days} days[/dim]"
+                f"[dim]No positions older than {exit_cfg.max_hold_days} days[/dim]"
             )
     else:
         console.print("[dim]Step 1a: Calendar-based exit disabled[/dim]")
 
     # Step 1b: EMA-based exit (long: price < EMA, short: price > EMA)
-    if exit_config.ema_exit:
+    if exit_cfg.ema_exit_enabled:
         console.print(
-            f"[bold]Step 1b: Checking EMA trend ({exit_config.ema_period}-day)...[/bold]"
+            f"[bold]Step 1b: Checking EMA trend ({exit_cfg.ema_period}-day)...[/bold]"
         )
-        ema_failures = get_positions_for_ema_exit(exit_config.ema_period)
+        ema_failures = get_positions_for_ema_exit(exit_cfg.ema_period)
         for symbol, price, ema, side in ema_failures:
             if side == "long":
                 console.print(
                     f"[yellow]EMA exit triggered for LONG {symbol}: "
-                    f"${price:.2f} < EMA({exit_config.ema_period})=${ema:.2f}[/yellow]"
+                    f"${price:.2f} < EMA({exit_cfg.ema_period})=${ema:.2f}[/yellow]"
                 )
             else:
                 console.print(
                     f"[yellow]EMA exit triggered for SHORT {symbol}: "
-                    f"${price:.2f} > EMA({exit_config.ema_period})=${ema:.2f}[/yellow]"
+                    f"${price:.2f} > EMA({exit_cfg.ema_period})=${ema:.2f}[/yellow]"
                 )
             positions_to_close.add(symbol)
         if not ema_failures:
@@ -511,13 +485,16 @@ def run_trading_cycle(exit_config: ExitConfig):
         console.print("[dim]Step 1b: EMA-based exit disabled[/dim]")
 
     # Step 1c: Trailing stop activation (positions that hit gain threshold)
-    if exit_config.trailing_stop_enabled:
+    # Shorts use tighter thresholds (faster exits due to unlimited loss potential)
+    if exit_cfg.trailing_stop_enabled:
         console.print(
             f"[bold]Step 1c: Checking for trailing stop activation "
-            f"(>{exit_config.trailing_stop_activation_percent}% gain)...[/bold]"
+            f"(longs >{exit_cfg.trailing_stop_activation_pct}%, "
+            f"shorts >{exit_cfg.short_trailing_stop_activation_pct}%)...[/bold]"
         )
         eligible_positions = get_positions_for_trailing_stop(
-            exit_config.trailing_stop_activation_percent
+            exit_cfg.trailing_stop_activation_pct,
+            exit_cfg.short_trailing_stop_activation_pct,
         )
 
         activated_count = 0
@@ -529,10 +506,17 @@ def run_trading_cycle(exit_config: ExitConfig):
             side,
         ) in eligible_positions:
             position_type = "LONG" if side == "long" else "SHORT"
+
+            # Use tighter trail for shorts (unlimited loss potential)
+            if side == "long":
+                trail_percent = exit_cfg.trailing_stop_trail_pct
+            else:
+                trail_percent = exit_cfg.short_trailing_stop_trail_pct
+
             console.print(
                 f"[cyan]{position_type} {symbol} eligible for trailing stop: "
                 f"${entry_price:.2f} -> ${current_price:.2f} "
-                f"(+{gain_percent:.2f}%)[/cyan]"
+                f"(+{gain_percent:.2f}%, will trail {trail_percent}%)[/cyan]"
             )
 
             # Check if this position already has a trailing stop
@@ -546,16 +530,14 @@ def run_trading_cycle(exit_config: ExitConfig):
             )
 
             if not has_trailing_stop:
-                if activate_trailing_stop(
-                    symbol, exit_config.trailing_stop_trail_percent
-                ):
+                if activate_trailing_stop(symbol, trail_percent):
                     activated_count += 1
             else:
                 console.print(f"[dim]  {symbol} already has trailing stop[/dim]")
 
         if not eligible_positions:
             console.print(
-                f"[dim]No positions with >{exit_config.trailing_stop_activation_percent}% gain[/dim]"
+                f"[dim]No positions with >{exit_cfg.trailing_stop_activation_pct}% gain[/dim]"
             )
         elif activated_count > 0:
             console.print(
@@ -589,7 +571,7 @@ def run_trading_cycle(exit_config: ExitConfig):
 
     # Step 4: Analyze and filter trade ideas
     console.print("\n[bold]Step 4: Analyzing stocks...[/bold]")
-    ticker_file = os.getenv("TICKER_FILE", "tickers.txt")
+    ticker_file = str(config.tickers.file_path)
 
     try:
         results = analyze(ticker_file)
@@ -639,24 +621,32 @@ def sleep_until_tomorrow(now: datetime):
     time.sleep(max(sleep_seconds, 60))  # At least 60 seconds
 
 
-def bot_main(exit_config: ExitConfig):
+def bot_main():
     """Main bot loop - runs continuously."""
+    exit_cfg = config.exit
+
     console.print(f"\n[bold green]{'=' * 50}[/bold green]")
     console.print("[bold green]Swing Trading Bot Started[/bold green]")
     console.print(f"[bold green]{'=' * 50}[/bold green]\n")
-    console.print(f"[dim]Paper trading: {is_paper}[/dim]")
-    console.print(f"[dim]Ticker file: {os.getenv('TICKER_FILE', 'tickers.txt')}[/dim]")
+    console.print(f"[dim]Paper trading: {config.alpaca.paper_trading}[/dim]")
+    console.print(f"[dim]Ticker file: {config.tickers.file_path}[/dim]")
 
     # Display exit configuration
     console.print("[dim]Exit modes:[/dim]")
-    if exit_config.calendar_exit_enabled:
-        console.print(f"[dim]  - Calendar: {exit_config.max_days} days max hold[/dim]")
-    if exit_config.ema_exit:
-        console.print(f"[dim]  - EMA trend: {exit_config.ema_period}-day EMA[/dim]")
-    if exit_config.trailing_stop_enabled:
+    if exit_cfg.calendar_exit_enabled:
         console.print(
-            f"[dim]  - Trailing stop: Activate at +{exit_config.trailing_stop_activation_percent}%, "
-            f"trail {exit_config.trailing_stop_trail_percent}%[/dim]"
+            f"[dim]  - Calendar: {exit_cfg.max_hold_days} days max hold[/dim]"
+        )
+    if exit_cfg.ema_exit_enabled:
+        console.print(f"[dim]  - EMA trend: {exit_cfg.ema_period}-day EMA[/dim]")
+    if exit_cfg.trailing_stop_enabled:
+        console.print(
+            f"[dim]  - Trailing stop (longs): Activate at +{exit_cfg.trailing_stop_activation_pct}%, "
+            f"trail {exit_cfg.trailing_stop_trail_pct}%[/dim]"
+        )
+        console.print(
+            f"[dim]  - Trailing stop (shorts): Activate at +{exit_cfg.short_trailing_stop_activation_pct}%, "
+            f"trail {exit_cfg.short_trailing_stop_trail_pct}%[/dim]"
         )
     console.print()
 
@@ -706,71 +696,21 @@ def bot_main(exit_config: ExitConfig):
             time.sleep(sleep_seconds)
 
         # Execute trading cycle
-        run_trading_cycle(exit_config)
+        run_trading_cycle()
 
 
-def main(
-    ema_exit: bool | None = None,
-    ema_period: int | None = None,
-    max_days: int | None = None,
-    trailing_stop: bool | None = None,
-    trailing_stop_activation: float | None = None,
-    trailing_stop_trail: float | None = None,
-):
-    """
-    Swing Trading Bot with configurable exit modes.
-
-    Args:
-        ema_exit: Enable EMA-based exit (close when price < EMA)
-        ema_period: EMA period for trend-based stop (default: 10)
-        max_days: Calendar-based exit after N days (default: 21, 0 to disable)
-        trailing_stop: Enable trailing stop mode
-        trailing_stop_activation: Gain % to activate trailing stop (default: 3.0)
-        trailing_stop_trail: Trailing stop % (default: 2.0)
-
-    Environment variables (CLI overrides these):
-        EMA_EXIT: Set to "true" to enable EMA-based exit
-        EMA_PERIOD: EMA period for trend-based stop
-        MAX_DAYS: Calendar-based exit after N days
-        TRAILING_STOP: Set to "true" to enable trailing stop mode
-        TRAILING_STOP_ACTIVATION: Gain % threshold to activate trailing stop
-        TRAILING_STOP_TRAIL: Trailing stop percentage
-    """
-    # Read from environment variables, CLI args override
-    if ema_exit is None:
-        ema_exit = os.getenv("EMA_EXIT", "").lower() == "true"
-    if ema_period is None:
-        ema_period = int(os.getenv("EMA_PERIOD", "10"))
-    if max_days is None:
-        max_days = int(os.getenv("MAX_DAYS", "21"))
-    if trailing_stop is None:
-        trailing_stop = os.getenv("TRAILING_STOP", "").lower() == "true"
-    if trailing_stop_activation is None:
-        trailing_stop_activation = float(os.getenv("TRAILING_STOP_ACTIVATION", "3.0"))
-    if trailing_stop_trail is None:
-        trailing_stop_trail = float(os.getenv("TRAILING_STOP_TRAIL", "2.0"))
-
-    exit_config = ExitConfig(
-        ema_exit=ema_exit,
-        ema_period=ema_period,
-        max_days=max_days,
-        trailing_stop_enabled=trailing_stop,
-        trailing_stop_activation_percent=trailing_stop_activation,
-        trailing_stop_trail_percent=trailing_stop_trail,
-    )
-
+def main():
+    """Entry point for the trading bot."""
     # Validate at least one exit mode is enabled
-    if not exit_config.any_exit_enabled:
+    if not config.exit.any_exit_enabled:
         console.print("[red]Error: At least one exit mode must be enabled[/red]")
         console.print(
-            "[dim]Use --ema_exit, --max_days > 0, and/or --trailing_stop[/dim]"
+            "[dim]Set EMA_EXIT=true, MAX_DAYS > 0, and/or TRAILING_STOP=true in your .env file[/dim]"
         )
         return
 
-    bot_main(exit_config)
+    bot_main()
 
 
 if __name__ == "__main__":
-    import fire
-
-    fire.Fire(main)
+    main()

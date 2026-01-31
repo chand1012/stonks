@@ -6,7 +6,7 @@ import yfinance as yf
 from rich.console import Console
 from rich.table import Table
 
-RISK_PERCENT = 0.005
+from config import config
 
 
 def calculate_sma(series, window):
@@ -68,7 +68,7 @@ def get_market_regime() -> bool:
     try:
         spy = yf.download("SPY", period="1y", progress=False, auto_adjust=True)
 
-        if spy.empty or len(spy) < 200:
+        if spy.empty or len(spy) < config.analysis.sma_trend_period:
             # If we can't get data, assume bullish to avoid blocking trades
             return True
 
@@ -77,7 +77,9 @@ def get_market_regime() -> bool:
             spy = spy.xs("SPY", axis=1, level=1)
 
         current_price = float(spy["Close"].iloc[-1])
-        sma_200 = float(spy["Close"].rolling(200).mean().iloc[-1])
+        sma_200 = float(
+            spy["Close"].rolling(config.analysis.sma_trend_period).mean().iloc[-1]
+        )
 
         return current_price > sma_200
     except Exception:
@@ -95,7 +97,8 @@ def generate_execution_summary(
     Args:
         risk_multiplier: Multiplier for position size (0.5 in bearish market, 1.0 in bullish)
     """
-    risk_percent = RISK_PERCENT * risk_multiplier
+    base_risk = config.analysis.base_risk_percent / 100
+    risk_percent = base_risk * risk_multiplier
     max_risk_dollars = account_value * risk_percent
 
     risk_per_share = price - stop_loss
@@ -131,7 +134,9 @@ def generate_execution_summary(
 
     table.add_row("Action", "BUY (Limit)", f"Current Price: ${price:.2f}")
     table.add_row(
-        "Quantity", f"{shares} Shares", f"Based on {RISK_PERCENT * 100}% Account Risk"
+        "Quantity",
+        f"{shares} Shares",
+        f"Based on {config.analysis.base_risk_percent}% Account Risk",
     )
     table.add_row("Entry Price", f"${price:.2f}", "Limit Order")
     table.add_row("Stop Loss", f"${stop_loss:.2f}", "Hard Stop (Below 50SMA)")
@@ -175,7 +180,7 @@ def analyze_stock(
         # Download 1 year of data to ensure we have enough for 200 SMA
         df = yf.download(ticker, period="1y", progress=False, auto_adjust=True)
 
-        if df.empty or len(df) < 200:
+        if df.empty or len(df) < config.analysis.sma_trend_period:
             return None
 
         # Handle yfinance multi-index columns if present
@@ -183,17 +188,19 @@ def analyze_stock(
             df = df.xs(ticker, axis=1, level=1)
 
         # Calculate Indicators
-        df["SMA_50"] = calculate_sma(df["Close"], 50)
-        df["SMA_200"] = calculate_sma(df["Close"], 200)
+        df["SMA_50"] = calculate_sma(df["Close"], config.analysis.sma_entry_period)
+        df["SMA_200"] = calculate_sma(df["Close"], config.analysis.sma_trend_period)
 
         current_close = float(df["Close"].iloc[-1])
         sma_50 = float(df["SMA_50"].iloc[-1])
         sma_200 = float(df["SMA_200"].iloc[-1])
 
         # Volume Filter (applies to both long and short)
-        avg_volume_20 = df["Volume"].rolling(20).mean().iloc[-1]
+        avg_volume = (
+            df["Volume"].rolling(config.analysis.volume_avg_period).mean().iloc[-1]
+        )
         current_volume = df["Volume"].iloc[-1]
-        has_volume = current_volume > avg_volume_20 * 1.2
+        has_volume = current_volume > avg_volume * config.entry.volume_filter_multiplier
 
         if not has_volume:
             return None
@@ -201,18 +208,24 @@ def analyze_stock(
         # Calculate distance from 50 SMA
         distance_from_50 = (current_close - sma_50) / sma_50
 
+        # Convert percentages to decimals for comparison
+        long_min = config.entry.long_pullback_min_pct / 100
+        long_max = config.entry.long_pullback_max_pct / 100
+        short_min = -config.entry.short_rally_max_pct / 100
+        short_max = -config.entry.short_rally_min_pct / 100
+
         # --- LONG STRATEGY ---
         # Trend Filter: Price > 200 SMA (uptrend)
-        # Entry Filter: Price 0-5% above 50 SMA (pullback to support)
+        # Entry Filter: Price within pullback range of 50 SMA
         is_uptrend = current_close > sma_200
-        is_long_pullback = 0 < distance_from_50 < 0.05
+        is_long_pullback = long_min < distance_from_50 < long_max
 
         if is_uptrend and is_long_pullback:
-            # Stop Loss: 2% below 50 SMA
-            stop_loss = sma_50 * 0.98
-            # Target: 1.5x risk
+            # Stop Loss: X% below 50 SMA
+            stop_loss = sma_50 * (1 - config.entry.long_stop_loss_pct / 100)
+            # Target: risk_reward_ratio * risk
             risk = current_close - stop_loss
-            target = current_close + (risk * 1.5)
+            target = current_close + (risk * config.entry.risk_reward_ratio)
 
             return _build_trade_result(
                 ticker=ticker,
@@ -229,16 +242,16 @@ def analyze_stock(
 
         # --- SHORT STRATEGY ---
         # Trend Filter: Price < 200 SMA (downtrend)
-        # Entry Filter: Price 0-5% below 50 SMA (rally to resistance)
+        # Entry Filter: Price within rally range of 50 SMA
         is_downtrend = current_close < sma_200
-        is_short_rally = -0.05 < distance_from_50 < 0
+        is_short_rally = short_min < distance_from_50 < short_max
 
         if is_downtrend and is_short_rally:
-            # Stop Loss: 2% above 50 SMA
-            stop_loss = sma_50 * 1.02
-            # Target: 1.5x risk (below entry for shorts)
+            # Stop Loss: X% above 50 SMA
+            stop_loss = sma_50 * (1 + config.entry.short_stop_loss_pct / 100)
+            # Target: risk_reward_ratio * risk (below entry for shorts)
             risk = stop_loss - current_close
-            target = current_close - (risk * 1.5)
+            target = current_close - (risk * config.entry.risk_reward_ratio)
 
             return _build_trade_result(
                 ticker=ticker,
@@ -273,7 +286,8 @@ def _build_trade_result(
     console,
 ) -> dict | None:
     """Build trade result dict for either long or short trades."""
-    risk_percent = RISK_PERCENT * risk_multiplier
+    base_risk = config.analysis.base_risk_percent / 100
+    risk_percent = base_risk * risk_multiplier
     max_risk_dollars = account_value * risk_percent
 
     # Risk per share (always positive)
@@ -369,7 +383,9 @@ def _generate_execution_summary_with_side(
 
     table.add_row("Action", action, f"Current Price: ${price:.2f}")
     table.add_row(
-        "Quantity", f"{shares} Shares", f"Based on {RISK_PERCENT * 100}% Account Risk"
+        "Quantity",
+        f"{shares} Shares",
+        f"Based on {config.analysis.base_risk_percent}% Account Risk",
     )
     table.add_row("Entry Price", f"${price:.2f}", "Limit Order")
     table.add_row("Stop Loss", f"${stop_loss:.2f}", stop_note)

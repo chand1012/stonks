@@ -1,40 +1,19 @@
-import os
-
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestTradeRequest
-from dotenv import load_dotenv
 import httpx
 
-load_dotenv()
-
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+from config import config
 
 stock_historical_data_client = StockHistoricalDataClient(
-    ALPACA_API_KEY, ALPACA_SECRET_KEY
+    config.alpaca.api_key, config.alpaca.secret_key
 )
-
-endpoint = "https://arkfunds.io/api/v2/etf/holdings?symbol="
-funds = [
-    "ARKF",
-    "ARKG",
-    "ARKK",
-    "ARKQ",
-    "ARKW",
-    "ARKX",
-    "PRNT",
-    "IZRL",
-    "ARKVX",
-    "ARKB",
-]
 
 tickers = set[str]()
 trading_tickers = set[str]()
 
-for fund in funds:
-    response = httpx.get(endpoint + fund)
+for fund in config.tickers.ark_funds:
+    response = httpx.get(config.tickers.ark_api_url + fund)
     data = response.json()
-    # print(data)
     for holding in data["holdings"]:
         ticker: str = holding.get("ticker")
         if ticker and ticker.isalpha():

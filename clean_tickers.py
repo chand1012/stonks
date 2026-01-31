@@ -2,6 +2,8 @@ import yfinance as yf
 import sys
 import os
 
+from config import config
+
 
 def is_stock_active(ticker):
     try:
@@ -30,11 +32,13 @@ def clean_ticker_file(file_path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python clean_tickers.py <ticker_file_path>")
-        sys.exit(1)
+    # Use command line argument if provided, otherwise use config default
+    if len(sys.argv) >= 2:
+        file_path = sys.argv[1]
+    else:
+        file_path = str(config.tickers.file_path)
+        print(f"Using default ticker file from config: {file_path}")
 
-    file_path = sys.argv[1]
     if not os.path.exists(file_path):
         print(f"Error: File {file_path} not found")
         sys.exit(1)
