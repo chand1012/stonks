@@ -12,7 +12,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen
 
 # Copy Python source files
-COPY main.py screener.py clean_tickers.py ./
+COPY main.py screener.py clean_tickers.py config.py ./
 
 COPY tickers.txt ./
 COPY ark_tickers.txt ./
